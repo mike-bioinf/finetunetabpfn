@@ -103,28 +103,13 @@ class AESetup:
 
 @dataclass
 class TabPFNClassifierParams:
-    '''
-    Dataclass for the TabPFNClassifier parameters.
-
-    We currently enforce the use of float32 precision.
-    Higher precision types are significantly slower and should 
-    not lead to meaningful performance gains.
-    Lower or mixed precision can cause gradient underflow, 
-    which is typically addressed using gradient scaling.
-    However, scaling introduces the risk of gradient corruption,
-    which can disrupt finetune uniformity across datasets, since
-    the corruption can happen in the "middle of the meta-batch".
-    This effect should become more pronounced with larger batch sizes
-    (on the contrary with batch size 1 the effect should be low/minimal).
-    '''
-    model_path: str | Path | Literal['auto'] = "auto"
+    '''Dataclass for the TabPFNClassifier parameters'''
     n_estimators: int = 4
     softmax_temperature: float = 0.9
     balance_probabilities: bool = False
     average_before_softmax: bool = False
     ignore_pretraining_limits: bool = False
     device: str | device | Literal['auto'] = "auto"
-    inference_precision = torch.float32
     inference_config: dict | ModelInterfaceConfig | None = None
     random_state: int | RandomState | Generator | None = 0
 
@@ -140,13 +125,13 @@ def build_instance_setup(
     allow_none = False
 ) -> FineTuneSetup | AESetup | TabPFNClassifierParams:
     '''
-    Helps to build the setup instance with the different possible inputs 
-    and then returns it.
+    Helps to build the setup instance with the 
+    different possible inputs and then returns it. 
 
     Parameters:
-        cls: setup class.
-        input: input from which try to build the setup class.
-        allow_none: whether to allow None in input.
+        cls: Setup class.
+        input: Input from which try to build the setup class.
+        allow_none: Whether to allow None in input.
             If False and input is None an error is raised.
 
     Returns:

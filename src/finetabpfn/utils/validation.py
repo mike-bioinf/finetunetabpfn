@@ -4,7 +4,6 @@ from typing import TYPE_CHECKING, Literal
 from sklearn.metrics import log_loss, roc_auc_score
 
 if TYPE_CHECKING:
-    import numpy as np
     from tabpfn.constants import XType, YType
     from tabpfn import TabPFNClassifier
     from tabpfn.model.transformer import PerFeatureTransformer
@@ -39,7 +38,7 @@ def iter_validate(
         y_vals,
         n_classes
     ):
-        # skip dataset on which the validation is not requested/possible
+        # skip dataset on which the validation is not requested
         if X_val is None:
             continue 
 

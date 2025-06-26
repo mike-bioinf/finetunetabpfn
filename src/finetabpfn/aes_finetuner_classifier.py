@@ -3,8 +3,9 @@ from __future__ import annotations
 import warnings
 import math
 import time
-import numpy as np
 import torch
+import numpy as np
+import pandas as pd
 from dataclasses import asdict
 from typing import Literal, TYPE_CHECKING
 from functools import partial, wraps
@@ -24,61 +25,80 @@ from finetabpfn.adaptive_early_stopping import AdaptiveEarlyStopping
 from finetabpfn.setup import FineTuneSetup, AESetup, TabPFNClassifierParams
 
 if TYPE_CHECKING:
+    from pathlib import Path
     from tabpfn.model.transformer import PerFeatureTransformer
 
 
 
-class AesFineTuner:
+class AesFineTunerTabPFNClassifier:
     '''
-    Class that implements a simple finetune strategy with an adaptive early stopping.
+    Finetune TabPFN classifier models with a simple adaptive early stopping strategy.
 
     Parameters:
-        Xs: finetune datas.
+        Xs (XType | list[XType]): 
+            Datasets on which the model is finetuned.
         
-        ys: finetune datas labels.
+        ys (YType | list[YType]): 
+            Labels of the datasets on which the model is finetuned.
         
-        use_for_validation: 
-            Indicates which data should be used in validation 
-            in the early stopping procedure. 
+        use_for_validation (None | bool | list[bool], optional): 
+            Indicates which datasets are used in validation.
             If a list must be of the same lenght as Xs and made of booleans.
-            If None all datas are used for validation.ù
+            If None all datasets are used for validation.
+            Note that the datasets not used in validation are 
+            enterely used for training.
         
-        learning_rate: learning rate.
+        model_path (str | Path | Literal['auto'], optional):
+            Filepath of the tabpfn model to finetune.
+            - If "auto", the model will be downloaded upon first use
+            in your your system cache directory,. 
+            - If a path or a string of a path, the model will be loaded 
+            from the user-specified location if available, 
+            otherwise it will be downloaded to this location.
+         
+        learning_rate (float, optional): 
+            Learning rate to use.
         
-        batch_size: batch size (for now enforced by tabpfn to 1).
+        batch_size (int, optional): 
+            Batch size to use (for now enforced to 1 by tabpfn).
         
-        n_accumulation_steps:
-            Number of inner step in which the grads are accumulated.
+        n_accumulation_steps (int, optional):
+            Number of inner steps in which the gradients are accumulated.
             If "accumulate_grads_over_datasets" is False then it refers to
             the absolute number of batch on which the accumulation is done.
             If "accumulate_grads_over_datasets" is True then refers to the 
-            number of entire rounds over the metabatch.
+            number of rounds over the full metabatches.
             Note that in both cases a single batch can have a size greater than 1.
 
-        accumulate_grads_over_datasets: 
+        accumulate_grads_over_datasets (bool, optional): 
             Whether to accumulate the grads over the entire "metabatch".
+
+        tabpfn_classifier_params (Literal["default"] | dict | TabPFNClassifierParams, optional):
+            Parameters of the tabpfn classifier instance used in finetuning. 
         
-        finetune_setup: Finetune specs.
+        finetune_setup (Literal["default"] | dict | TabPFNClassifierParams, optional): 
+            Finetune specifics.
         
-        aes_setup: Specs for the adaptive early stopping procedure.
+        aes_setup (Literal["default"] | dict | AESetup, optional): 
+            Specifics of the adaptive early stopping procedure.
         
-        optimizer: optimizer.
+        optimizer (Literal["adam"], optional): 
+            Optimizer to use.
+         
+        seed (int, optional): 
+            Seed used for reproducibility.
         
-        device: device.
-        
-        inference_precision: 
-            Precision to use in the finetune process.
-            Can be a torch dtype or "autocast" or "auto".
-        
-        seed: integer used for reproducibility.
-        
-        log: Whether to log at debug level the finetune step metrics.
+        log (bool, optional): 
+            Whether to log the finetune metrics.
+            The log informs about the finetune metrics computed at each step.
+            The log is raised at debug level and directed to stderr.
     '''
     def __init__(
         self,
         Xs: XType | list[XType],
         ys: YType | list[YType],
         use_for_validation: None | bool | list[bool] = None,
+        model_path: str | Path | Literal['auto'] = "auto",
         ## TODO: add categorical features list of lists or None ??.
         learning_rate: float = 1e-5,
         batch_size: int = 1,
@@ -93,6 +113,7 @@ class AesFineTuner:
     ):
         self.Xs, self.ys = self._build_Xys(Xs, ys)
         self.use_for_validation = self._build_use_for_validation(use_for_validation, Xs)
+        self.model_path = model_path
         self.learning_rate = learning_rate
         self.batch_size = batch_size
         self.n_accumulation_steps = n_accumulation_steps
@@ -104,16 +125,21 @@ class AesFineTuner:
         self.seed = seed
         self.logger = create_logger() if log else None
         # learned finetune attrs
+        self.is_fitted_ = False
+        self.name_val_metric_: str = None
+        self.name_monitor_val_metric_: str | None = None
         self.best_model_: PerFeatureTransformer = None
-        self.checkpoint_config_: dict= None
-        self.init_val_metric_: float = None
-        self.best_val_metric_: float = None
+        self.checkpoint_config_: dict = None
         self.n_steps_finetune_: int = 0
         self.best_step_: int = 0
-        self.steps_train_losses_ : list[float] = []
+        self.best_val_metric_: float = None
+        self.init_val_metric_: float = None
+        self.steps_train_losses_: list[float] = []
         self.steps_val_metrics_: list[float] = []
         self.steps_monitor_val_metrics_: list[float] | None = None
-        self.stopping_criteria_ = None
+        self.steps_remaining_patience_: list[int] = []
+        self.steps_grad_norms_: list[float] = []
+        self.stopping_criteria_: str = None
 
 
 
@@ -140,40 +166,53 @@ class AesFineTuner:
         '''
         n_training_datasets = len(self.Xs)
         device = resolve_device(self.tcp.device)
-        val_metric_name = get_metric_name(self.fts.validation_metric)
-        monitor_val_metric_name = get_metric_name(self.fts.monitor_validation_metric)
 
-        aes = AdaptiveEarlyStopping(**asdict(self.aes_setup))
-        clf = TabPFNClassifier(**asdict(self.tcp), fit_mode="batched")
-        clf_validation = TabPFNClassifier(**asdict(self.tcp), fit_mode="low_memory")
+        self.name_val_metric_ = get_metric_name(self.fts.validation_metric)
+        self.name_monitor_val_metric_ = get_metric_name(self.fts.monitor_validation_metric)
+        
+        # we set precision to float32 to avoid the slow computation
+        # of higher precisions and gradients underflow at lower/mixed precisions.
+        # here implementing gradient scaling is not simple due to the metabatch
+        clf = TabPFNClassifier(
+            **asdict(self.tcp),
+            model_path=self.model_path, 
+            fit_mode="batched",
+            memory_saving_mode=False, 
+            inference_precision=torch.float32 
+        )
+        
+        clf_validation = TabPFNClassifier(
+            **asdict(self.tcp),
+            model_path=self.model_path, 
+            fit_mode="low_memory",
+            inference_precision=torch.float32
+        )
 
         datasets_n_classes = self._get_datasets_n_classes()
         X_trains, y_trains, X_vals, y_vals = self._split_xys_in_train_val()
         
         ## TODO: here we have no stratification and no folds (WHAT TO DO ?)
+        # passing a random_state to ensure variance in splits
         split_fn = partial(
             train_test_split,
             train_size=self.fts.train_contest_percentage,
-            random_state=self.seed, 
+            random_state=np.random.RandomState(self.seed), 
             shuffle=True
         )
 
-        # this load the model in the "model_" attribute
+        # this load/set the model in the "model_" attribute
         datasets_collection = clf.get_preprocessed_datasets(
             X_raw=X_trains,
             y_raw=y_trains,
             split_fn=split_fn
         )
-        
-        # needed to save the model on disk
-        checkpoint_config_ = vars(clf.config_)
 
         # meta_dataset_collator avoid the default torch collate_fn
         # that is unable to manage our "samples".
         # With batch size of 1 this collate fn has no real effect.
         # When the batch size is unlocked maybe one can implement
         # a second collate function to retain the current situation 
-        # of single size batch with no padding
+        # of single size batch with no padding.
         dl = DataLoader(
             dataset=datasets_collection, 
             batch_size=self.batch_size,
@@ -185,6 +224,7 @@ class AesFineTuner:
             lr=self.learning_rate
         )
 
+        aes = AdaptiveEarlyStopping(**asdict(self.aes_setup))
         loss_fn = torch.nn.NLLLoss()
 
         partial_iter_validate = partial(
@@ -219,20 +259,13 @@ class AesFineTuner:
         # finetune loop
         while not self._signal_stop_finetune(aes, self.n_steps_finetune_, start_time):
             for batch in dl:
-                ## TODO: spostare a cuda i tensori ??
+                ## TODO: need to move tensors on device ??
                 X_trains, X_tests, y_trains, y_tests, cat_inxs, confs = batch
                 clf.fit_from_preprocessed(X_trains, y_trains, cat_inxs, confs)
                 preds = clf.forward(X_tests)
                 
-                # converting preds from (B, C, N) --> (N, C)
-                preds = preds.movedim(1, 2)
-                preds = preds.reshape(-1, preds.shape[-1])
-                
-                # converting y_tests from (B, N) --> N
-                y_tests = y_tests.flatten()
-                
                 # computing loss and backward
-                loss: torch.Tensor = loss_fn(torch.log(preds + 1e-8), y_tests)
+                loss: torch.Tensor = loss_fn(torch.log(preds + 1e-8), y_tests.to(device))
                 loss = loss / total_n_accumulation_steps
                 loss.backward()
 
@@ -252,11 +285,13 @@ class AesFineTuner:
                         error_if_nonfinite=True
                     )
 
+                    self.steps_grad_norms_.append(grad_norm.item())
+
                     # updating params and cleaning grads
                     optim_impl.step()
                     optim_impl.zero_grad()
 
-                    # deepcopy for safety as suggested by the "official finetune example" by priorlabs
+                    # deepcopy for safety as suggested by the finetune example by priorlabs
                     val_metric = partial_iter_validate(
                         model=deepcopy(clf.model_),
                         validation_metric=self.fts.validation_metric
@@ -271,7 +306,11 @@ class AesFineTuner:
                         aes.set_best_round(self.best_step_)
                         aes.update_patience()
                     
-                    # deepcopy for safety as suggested by the "official finetune example" by priorlabs
+                    self.steps_remaining_patience_.append(
+                        (aes.get_remaining_patience(self.n_steps_finetune_))
+                    )
+                    
+                    # deepcopy for safety as suggested by the finetune example by priorlabs
                     if self.fts.monitor_validation_metric is not None:
                         self.steps_monitor_val_metrics_.append(
                             partial_iter_validate(
@@ -283,23 +322,59 @@ class AesFineTuner:
                     if self.logger:
                         self._log_finetune_step(
                             start_time, 
-                            val_metric_name, 
-                            monitor_val_metric_name
+                            self.name_val_metric_, 
+                            self.name_monitor_val_metric_
                         )
-
+                        
+        # config needed to save the model on disk in a checkpoint
+        # self.checkpoint_config_ = vars(clf.config_)   ## TODO: config_ is None, how/where to take it?
+        self.is_fitted_ = True
         return self.best_val_metric_
                     
 
 
-    def _collect_finetune_attrs() -> dict:
+    ## TODO: complete, config dict needed 
+    def save_finetuned_model(path: str | Path) -> None:
+        pass
+ 
+
+
+    def collect_finetune_stats(self) -> dict:
         '''
-        Collect the finetune "learned" attributes into a single dict.
-        Revert the negative sign of validation matrics if some.
+        Collect the finetune statistics into a single dict.
+        Revert the negative sign of validation metrics if some.
         Returns the dict.
         '''
-        pass
+        if not self.is_fitted_:
+            raise ValueError("The instance is not fitted.")
+        
+        val_monitor_array = np.full(self.n_steps_finetune_, np.nan)\
+            if self.steps_monitor_val_metrics_ is None\
+            else np.abs(np.array(self.steps_monitor_val_metrics_))
+        
+        # we start from step 1 with 0 corresponding to the base model
+        df_summary = pd.DataFrame({
+            "step": list(range(1, self.n_steps_finetune_ + 1)),
+            "train_loss": self.steps_train_losses_,
+            "val_metric": np.abs(np.array(self.steps_val_metrics_)),
+            "val_monitor_metric": val_monitor_array,
+            "gradient_norm_unclipped": self.steps_grad_norms_,
+            "remaining_patience": self.steps_remaining_patience_
+        })
 
+        summary_dict = {
+            "df_finetune": df_summary,
+            "name_val_metric": self.name_val_metric_,
+            "name_monitor_val_metric": self.name_monitor_val_metric_, 
+            "best_step": self.best_step_,
+            "init_val_metric": abs(self.init_val_metric_),
+            "best_val_metric": abs(self.best_val_metric_),
+            "stopping_criteria": self.stopping_criteria_,
+        }
+        
+        return summary_dict
     
+
 
     def _log_finetune_step(
         self, 
@@ -307,7 +382,7 @@ class AesFineTuner:
         name_val_metric: str,
         name_monitor_val_metric: str | None
     ) -> None:    
-        '''Log the finetune step metrics. The log is raises at DEBUG level.'''
+        '''Log the finetune step metrics. The log is raises at debug level.'''
         total_time_spent = round(time.time() - start_time, 2)
         time_remaining = round(max(0, self.fts.time_limit - total_time_spent), 2)
 
@@ -360,7 +435,7 @@ class AesFineTuner:
 
     def _get_datasets_n_classes(self, mask_training_only = True) -> list[int | None]:
         '''
-        Get the number of classes for each dataset.
+        Get the number of classes for each training dataset.
         If "mask_training_only" is True the number of classes for the training only 
         datasets is masked to None.
         The output is a list of integers and/or None that follow the datasets order.
@@ -381,9 +456,9 @@ class AesFineTuner:
     def _split_xys_in_train_val(self) -> tuple[list[XType], list[YType], list[XType | None], list[YType | None]]:
         '''
         Generates the training/validation splits on the input Xs and ys.
-        The datasets to use only in training have the validation sets counterparts
+        The datasets that are used only in training have the validation sets counterparts
         set to None. The resulting lists have therefore the same lenght in all scenarios.
-        Returns the lists of splits in the X/y-train/val order.
+        Returns the lists of splits in X/y-train/val order.
         '''
         X_trains = []
         y_trains = []
