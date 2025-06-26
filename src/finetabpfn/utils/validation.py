@@ -10,6 +10,8 @@ if TYPE_CHECKING:
     
 
 
+## TODO: since we fit the classifier always on the same data one can generate
+## multiple of them caching the preprocessing and then call predict on all of them
 def iter_validate(
     *,
     clf: TabPFNClassifier,

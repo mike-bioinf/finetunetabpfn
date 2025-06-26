@@ -18,8 +18,14 @@ from tabpfn.utils import meta_dataset_collator
 from torch.utils.data import DataLoader
 from torch.optim import Adam
 from finetabpfn.setup import build_instance_setup
-from finetabpfn.utils.training import resolve_device
-from finetabpfn.utils.general import enlist, create_logger, get_metric_name
+from finetabpfn.utils.training import resolve_device, _train_test_split
+
+from finetabpfn.utils.general import (
+    enlist, 
+    create_logger, 
+    get_metric_name
+)
+
 from finetabpfn.utils.validation import iter_validate
 from finetabpfn.adaptive_early_stopping import AdaptiveEarlyStopping
 from finetabpfn.setup import FineTuneSetup, AESetup, TabPFNClassifierParams
@@ -91,7 +97,7 @@ class AesFineTunerTabPFNClassifier:
         log (bool, optional): 
             Whether to log the finetune metrics.
             The log informs about the finetune metrics computed at each step.
-            The log is raised at debug level and directed to stderr.
+            The log is emitted at debug level and directed to stderr.
     '''
     def __init__(
         self,
@@ -143,22 +149,27 @@ class AesFineTunerTabPFNClassifier:
 
 
 
-    def _suppress_sklearn_and_loading_warnings(func):
+    def _suppress_sklearn_and_tabpfn_warnings(func):
         '''
         Decorator to filter sklearn future deprecation warnings,
-        and tabpfn loading warning.
+        and tabpfn loading and ignore limits warning.
         '''
         @wraps(func)
         def wrapper(*args, **kwargs):
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", module="sklearn")
                 warnings.filterwarnings("ignore", message=".*", module=".*tabpfn.*loading")
+                warnings.filterwarnings(
+                    action="ignore", 
+                    message=".*is greater than the maximum Number of features 500 supported by the model.*",
+                    category=UserWarning
+                )
                 return func(*args, **kwargs)
         return wrapper
 
 
 
-    @_suppress_sklearn_and_loading_warnings
+    @_suppress_sklearn_and_tabpfn_warnings
     def fit(self) -> float:
         '''
         Finetune the model. 
@@ -191,13 +202,11 @@ class AesFineTunerTabPFNClassifier:
         datasets_n_classes = self._get_datasets_n_classes()
         X_trains, y_trains, X_vals, y_vals = self._split_xys_in_train_val()
         
-        ## TODO: here we have no stratification and no folds (WHAT TO DO ?)
         # passing a random_state to ensure variance in splits
         split_fn = partial(
-            train_test_split,
+            _train_test_split,
             train_size=self.fts.train_contest_percentage,
-            random_state=np.random.RandomState(self.seed), 
-            shuffle=True
+            random_state=np.random.RandomState(self.seed)
         )
 
         # this load/set the model in the "model_" attribute
@@ -259,7 +268,7 @@ class AesFineTunerTabPFNClassifier:
         # finetune loop
         while not self._signal_stop_finetune(aes, self.n_steps_finetune_, start_time):
             for batch in dl:
-                ## TODO: need to move tensors on device ??
+                # the tensors are on cpu
                 X_trains, X_tests, y_trains, y_tests, cat_inxs, confs = batch
                 clf.fit_from_preprocessed(X_trains, y_trains, cat_inxs, confs)
                 preds = clf.forward(X_tests)
@@ -291,7 +300,7 @@ class AesFineTunerTabPFNClassifier:
                     optim_impl.step()
                     optim_impl.zero_grad()
 
-                    # deepcopy for safety as suggested by the finetune example by priorlabs
+                    # deepcopy for safety as "suggested" by the finetune example by priorlabs
                     val_metric = partial_iter_validate(
                         model=deepcopy(clf.model_),
                         validation_metric=self.fts.validation_metric
@@ -310,7 +319,7 @@ class AesFineTunerTabPFNClassifier:
                         (aes.get_remaining_patience(self.n_steps_finetune_))
                     )
                     
-                    # deepcopy for safety as suggested by the finetune example by priorlabs
+                    # deepcopy for safety as "suggested" by the finetune example by priorlabs
                     if self.fts.monitor_validation_metric is not None:
                         self.steps_monitor_val_metrics_.append(
                             partial_iter_validate(
@@ -329,11 +338,12 @@ class AesFineTunerTabPFNClassifier:
         # config needed to save the model on disk in a checkpoint
         # self.checkpoint_config_ = vars(clf.config_)   ## TODO: config_ is None, how/where to take it?
         self.is_fitted_ = True
+        self.best_model_ = self.best_model_.to("cpu")
         return self.best_val_metric_
                     
 
 
-    ## TODO: complete, config dict needed 
+    ## TODO: complete, config_ needed 
     def save_finetuned_model(path: str | Path) -> None:
         pass
  

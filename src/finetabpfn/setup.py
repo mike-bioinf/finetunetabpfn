@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import torch
 from dataclasses import dataclass
 from typing import Literal, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from torch import device
-    from torch.types import _dtype
-    from pathlib import Path
     from tabpfn.config import ModelInterfaceConfig
     from numpy.random import RandomState, Generator
     

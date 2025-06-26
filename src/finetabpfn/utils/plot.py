@@ -7,6 +7,27 @@ from copy import deepcopy
 
 
 
+def plot_finetune_metrics_from_dict_stats(stats_dict: dict) -> Axes:
+    '''
+    Utility to plot the finetune summary plot directly from the 
+    dictionary of stats collected through "collect_finetune_stats".
+    The function plots by default all available metrics.
+    No choice on this aspect can be done.
+    The function does not check the validity of the input dict.
+    '''
+    plot_monitor_val_metric = False if stats_dict["name_monitor_val_metric"] is None else True
+    return plot_finetune_metrics(
+        df_finetune=stats_dict["df_finetune"],
+        train_loss=True,
+        val_metric=True,
+        monitor_val_metric=plot_monitor_val_metric,
+        name_val_metric=stats_dict["name_val_metric"],
+        name_monitor_val_metric=stats_dict["name_monitor_val_metric"],
+        best_step=stats_dict["best_step"]
+    )
+
+
+
 def plot_finetune_metrics(
     df_finetune: pd.DataFrame, 
     train_loss: bool, 
@@ -23,7 +44,7 @@ def plot_finetune_metrics(
     Parameters:
         df_finetune (pd.DataFrame): 
             The dataframe obtained from "collect_finetune_attrs" method.
-            No check is done on this.
+            No check is done on the validity of this dataframe.
         train_loss (bool):
             Whether to plot the train loss info.
         val_metric (bool):

@@ -1,10 +1,21 @@
 from __future__ import annotations
 
 import torch
+from sklearn.model_selection import train_test_split
 from typing import Literal, TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from numpy.random import RandomState
     from torch.types import _dtype
+
+
+
+def _train_test_split(X, y, train_size: float | None, random_state: int | RandomState | None):
+    '''
+    train_test_split wrapper to use in get_preprocessed_datasets to ensure stratification.
+    Here X and y are explicity defined as parameters.
+    '''
+    return train_test_split(X, y, train_size=train_size, random_state=random_state, stratify=y)
 
 
 
