@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import Literal, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from torch import device
     from tabpfn.config import ModelInterfaceConfig
     from numpy.random import RandomState, Generator
     
@@ -106,7 +105,6 @@ class TabPFNClassifierParams:
     balance_probabilities: bool = False
     average_before_softmax: bool = False
     ignore_pretraining_limits: bool = False
-    device: str | device | Literal['auto'] = "auto"
     inference_config: dict | ModelInterfaceConfig | None = None
     random_state: int | RandomState | Generator | None = 0
 

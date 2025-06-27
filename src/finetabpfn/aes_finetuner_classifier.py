@@ -32,6 +32,7 @@ from finetabpfn.setup import FineTuneSetup, AESetup, TabPFNClassifierParams
 
 if TYPE_CHECKING:
     from pathlib import Path
+    from torch import device
     from tabpfn.model.transformer import PerFeatureTransformer
 
 
@@ -93,6 +94,10 @@ class AesFineTunerTabPFNClassifier:
          
         seed (int, optional): 
             Seed used for reproducibility.
+
+        device (str | device | Literal['auto'], optional):
+            The device to use for finetuning. 
+            If "auto", the device is "cuda" if available, otherwise "cpu".
         
         log (bool, optional): 
             Whether to log the finetune metrics.
@@ -105,7 +110,6 @@ class AesFineTunerTabPFNClassifier:
         ys: YType | list[YType],
         use_for_validation: None | bool | list[bool] = None,
         model_path: str | Path | Literal['auto'] = "auto",
-        ## TODO: add categorical features list of lists or None ??.
         learning_rate: float = 1e-5,
         batch_size: int = 1,
         n_accumulation_steps: int = 1,
@@ -115,6 +119,7 @@ class AesFineTunerTabPFNClassifier:
         aes_setup: Literal["default"] | dict | AESetup = "default",
         optimizer: Literal["adam"] = "adam",
         seed: int = 0,
+        device: str | device | Literal['auto'] = "auto",
         log = True
     ):
         self.Xs, self.ys = self._build_Xys(Xs, ys)
@@ -129,6 +134,7 @@ class AesFineTunerTabPFNClassifier:
         self.aes_setup = build_instance_setup(AESetup, aes_setup)
         self.optimizer = optimizer
         self.seed = seed
+        self.device = device
         self.logger = create_logger() if log else None
         # learned finetune attrs
         self.is_fitted_ = False
@@ -176,7 +182,7 @@ class AesFineTunerTabPFNClassifier:
         Returns the final/best validation loss for optimization scenario.
         '''
         n_training_datasets = len(self.Xs)
-        device = resolve_device(self.tcp.device)
+        resolved_device = resolve_device(self.device)
 
         self.name_val_metric_ = get_metric_name(self.fts.validation_metric)
         self.name_monitor_val_metric_ = get_metric_name(self.fts.monitor_validation_metric)
@@ -189,14 +195,16 @@ class AesFineTunerTabPFNClassifier:
             model_path=self.model_path, 
             fit_mode="batched",
             memory_saving_mode=False, 
-            inference_precision=torch.float32 
+            inference_precision=torch.float32,
+            device=self.device
         )
         
         clf_validation = TabPFNClassifier(
             **asdict(self.tcp),
             model_path=self.model_path, 
             fit_mode="low_memory",
-            inference_precision=torch.float32
+            inference_precision=torch.float32,
+            device=self.device
         )
 
         datasets_n_classes = self._get_datasets_n_classes()
@@ -274,7 +282,7 @@ class AesFineTunerTabPFNClassifier:
                 preds = clf.forward(X_tests)
                 
                 # computing loss and backward
-                loss: torch.Tensor = loss_fn(torch.log(preds + 1e-8), y_tests.to(device))
+                loss: torch.Tensor = loss_fn(torch.log(preds + 1e-8), y_tests.to(resolved_device))
                 loss = loss / total_n_accumulation_steps
                 loss.backward()
 

@@ -15,14 +15,21 @@ def create_logger(stream=sys.stderr) -> logging.Logger:
     logger = logging.getLogger("finetune")
     logger.setLevel(logging.DEBUG)
 
-    # to avoid repetition of the same handler in the logger with multiple calls to finetune
+    # to avoid repetition of the same handler in the logger 
+    # with multiple instances of the finetuner classes
     for handler in logger.handlers:
         if isinstance(handler, logging.StreamHandler) and handler.stream == stream:
             return logger
         
     console_handler = logging.StreamHandler(stream)
     console_handler.setLevel(logging.DEBUG)
-    formatter = logging.Formatter(fmt="{asctime} \t {message}", datefmt="%Y-%m-%d %H:%M", style="{")
+    
+    formatter = logging.Formatter(
+        fmt="{asctime} \t {message}", 
+        datefmt="%Y-%m-%d %H:%M", 
+        style="{"
+    )
+    
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
     logger.propagate = False
@@ -42,6 +49,6 @@ def get_metric_name(metric: Literal["log_loss", "roc_auc"] | None) -> str | None
     elif metric == "log_loss":
         metric_name = "Log Loss"
     else:
-        raise ValueError("Unsupported metric passed in input.")
+        raise NotImplementedError("Unsupported metric passed in input.")
         
     return metric_name

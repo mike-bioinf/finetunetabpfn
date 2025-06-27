@@ -6,6 +6,7 @@ from sklearn.base import ClassifierMixin, BaseEstimator
 from sklearn.utils.validation import check_is_fitted
 from tabpfn import TabPFNClassifier
 from finetabpfn.utils.training import resolve_device
+from finetabpfn import TabPFNClassifierParams
 from finetabpfn.setup import build_instance_setup
 from finetabpfn.aes_finetuner_classifier import AesFineTunerTabPFNClassifier
 
@@ -15,7 +16,7 @@ if TYPE_CHECKING:
     from torch import device
     from pathlib import Path
     from tabpfn.constants import XType, YType
-    from finetabpfn import FineTuneSetup, AESetup, TabPFNClassifierParams
+    from finetabpfn import FineTuneSetup, AESetup
 
 
 
@@ -72,6 +73,10 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
 
     seed : int, optional
         Seed for reproducibility.
+    
+    device: str | device | Literal['auto'], optional
+        The device to use for finetuning. 
+        If "auto", the device is "cuda" if available, otherwise "cpu".
 
     log : bool, optional
         Whether to log finetuning metrics.
@@ -103,6 +108,7 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
         aes_setup: Literal["default"] | dict | AESetup = "default",
         optimizer: Literal["adam"] = "adam",
         seed: int = 0,
+        device: str | device | Literal['auto'] = "auto",
         log = True
     ):
         self.model_path = model_path
@@ -115,6 +121,7 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
         self.aes_setup = aes_setup
         self.optimizer = optimizer
         self.seed = seed
+        self.device = device
         self.log = log
 
     
@@ -162,6 +169,7 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
             aes_setup=self.aes_setup,
             optimizer=self.optimizer,
             seed=self.seed,
+            device=self.device,
             log=self.log
         )
 
@@ -175,9 +183,9 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
     
     def predict(
         self, 
+        X_test: XType,
         X_contest: XType, 
         y_contest: YType, 
-        X_test: XType,
         categorical_features_indices: Sequence[int] | None = None,
         balance_probabilities: bool = False,
         inference_precision: dtype | Literal['autocast', 'auto'] = "auto",
@@ -189,12 +197,12 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
 
         Parameters
         --------------
+        X_test : XType
+            X test, usually passed to the base tabpfn classifiers in the predict methods.
         X_contest : XType
             X contest, usually passed to the base tabpfn classifiers in the fit method.
         y_contest : YType
             y contest, usually passed to the base tabpfn classifiers in the fit method.
-        X_test : XType
-            X test, usually passed to the base tabpfn classifiers in the predict methods.
         categorical_features_indices : Sequence[int] | None, optional
             See TabPFNClassifier documentation.
         inference_precision : dtype | Literal['autocast', 'auto'], optional
@@ -210,7 +218,6 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
             The predicted class labels.
         '''
         check_is_fitted(self, attributes="finetuned_model_")
-        device = resolve_device(device)
         
         clf = self._set_tabpfn_for_testing(
             categorical_features_indices,
@@ -221,17 +228,18 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
         )
 
         clf.fit(X_contest, y_contest)
-        clf.model_ = self.finetuned_model_.to(device)
-        clf.executor_.model = self.finetuned_model_.to(device)
+        resolved_device = resolve_device(device)
+        clf.model_ = self.finetuned_model_.to(resolved_device)
+        clf.executor_.model = self.finetuned_model_.to(resolved_device)
         return clf.predict(X_test)
 
 
 
     def predict_proba(
         self, 
+        X_test: XType,
         X_contest: XType, 
         y_contest: YType, 
-        X_test: XType,
         categorical_features_indices: Sequence[int] | None = None,
         balance_probabilities: bool = False,
         inference_precision: dtype | Literal['autocast', 'auto'] = "auto",
@@ -243,12 +251,12 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
 
         Parameters
         --------------
+        X_test : XType
+            X test, usually passed to the base tabpfn classifiers in the predict methods.
         X_contest : XType
             X contest, usually passed to the base tabpfn classifiers in the fit method.
         y_contest : YType
             y contest, usually passed to the base tabpfn classifiers in the fit method.
-        X_test : XType
-            X test, usually passed to the base tabpfn classifiers in the predict methods.
         categorical_features_indices : Sequence[int] | None, optional
             See TabPFNClassifier documentation.
         inference_precision : dtype | Literal['autocast', 'auto'], optional
@@ -264,7 +272,6 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
             The predicted class probabilities.
         '''
         check_is_fitted(self, attributes="finetuned_model_")
-        device = resolve_device(device)
 
         clf = self._set_tabpfn_for_testing(
             categorical_features_indices,
@@ -275,8 +282,9 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
         )
 
         clf.fit(X_contest, y_contest)
-        clf.model_ = self.finetuned_model_.to(device)
-        clf.executor_.model = self.finetuned_model_.to(device)
+        resolved_device = resolve_device(device)
+        clf.model_ = self.finetuned_model_.to(resolved_device)
+        clf.executor_.model = self.finetuned_model_.to(resolved_device)
         return clf.predict_proba(X_test)
 
 
@@ -293,15 +301,18 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
         Set the tabpfn classifier with the same specs used in finetuning,
         plus the ones that can be freely selected in testing.
         '''
-        clf_params = asdict(build_instance_setup(self.tabpfn_classifier_params))
+        clf_params = asdict(
+            build_instance_setup(TabPFNClassifierParams, self.tabpfn_classifier_params)
+        )
+        
         # overwriting the params shared between fit and predict
         clf_params["balance_probabilities"] = balance_probabilities
-        clf_params["device"] = device
 
         return TabPFNClassifier(
             **clf_params, 
             fit_mode="low_memory",
             categorical_features_indices=categorical_features_indices,
             inference_precision=inference_precision,
-            memory_saving_mode=memory_saving_mode
+            memory_saving_mode=memory_saving_mode,
+            device=device
         )    
