@@ -174,6 +174,7 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
         )
 
         _ = finetuner.fit()
+        # the best_model_ is on cpu
         self.finetuned_model_ = finetuner.best_model_
         self.checkpoint_config_ = finetuner.checkpoint_config_
         self.stats_finetune_ = finetuner.collect_finetune_stats()
@@ -189,8 +190,7 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
         categorical_features_indices: Sequence[int] | None = None,
         balance_probabilities: bool = False,
         inference_precision: dtype | Literal['autocast', 'auto'] = "auto",
-        memory_saving_mode: bool | float | int | Literal['auto'] = "auto",
-        device: str | device | Literal['auto'] = "auto"
+        memory_saving_mode: bool | float | int | Literal['auto'] = "auto"
     ) -> np.ndarray:
         '''
         Predict the class labels of X_test samples.
@@ -205,11 +205,11 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
             y contest, usually passed to the base tabpfn classifiers in the fit method.
         categorical_features_indices : Sequence[int] | None, optional
             See TabPFNClassifier documentation.
+        balance_probabilities : bool, optional:
+            See TabPFNClassifier documentation.
         inference_precision : dtype | Literal['autocast', 'auto'], optional
             See TabPFNClassifier documentation.
         memory_saving_mode : bool | float | int | Literal['auto'], optional
-            See TabPFNClassifier documentation.
-        device: str | device | Literal['auto'], optional
             See TabPFNClassifier documentation.
         
         Returns
@@ -223,16 +223,16 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
             categorical_features_indices,
             balance_probabilities, 
             inference_precision, 
-            memory_saving_mode,
-            device
+            memory_saving_mode
         )
 
         clf.fit(X_contest, y_contest)
-        resolved_device = resolve_device(device)
-        clf.model_ = self.finetuned_model_.to(resolved_device)
-        clf.executor_.model = self.finetuned_model_.to(resolved_device)
-        return clf.predict(X_test)
-
+        self.finetuned_model_.to(resolve_device(self.device))
+        clf.model_ = self.finetuned_model_
+        clf.executor_.model = self.finetuned_model_
+        pred = clf.predict(X_test)
+        self.finetuned_model_.to("cpu")
+        return pred
 
 
     def predict_proba(
@@ -243,8 +243,7 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
         categorical_features_indices: Sequence[int] | None = None,
         balance_probabilities: bool = False,
         inference_precision: dtype | Literal['autocast', 'auto'] = "auto",
-        memory_saving_mode: bool | float | int | Literal['auto'] = "auto",
-        device: str | device | Literal['auto'] = "auto"
+        memory_saving_mode: bool | float | int | Literal['auto'] = "auto"
     ) -> np.ndarray:
         '''
         Predict the probabilities of the classes of X_test samples.
@@ -259,11 +258,11 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
             y contest, usually passed to the base tabpfn classifiers in the fit method.
         categorical_features_indices : Sequence[int] | None, optional
             See TabPFNClassifier documentation.
+        balance_probabilities : bool, optional:
+            See TabPFNClassifier documentation.
         inference_precision : dtype | Literal['autocast', 'auto'], optional
             See TabPFNClassifier documentation.
         memory_saving_mode : bool | float | int | Literal['auto'], optional
-            See TabPFNClassifier documentation.
-        device: str | device | Literal['auto'], optional
             See TabPFNClassifier documentation.
 
         Returns
@@ -277,15 +276,16 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
             categorical_features_indices,
             balance_probabilities, 
             inference_precision, 
-            memory_saving_mode,
-            device
+            memory_saving_mode
         )
 
         clf.fit(X_contest, y_contest)
-        resolved_device = resolve_device(device)
-        clf.model_ = self.finetuned_model_.to(resolved_device)
-        clf.executor_.model = self.finetuned_model_.to(resolved_device)
-        return clf.predict_proba(X_test)
+        self.finetuned_model_.to(resolve_device(self.device))
+        clf.model_ = self.finetuned_model_
+        clf.executor_.model = self.finetuned_model_
+        pred_proba = clf.predict_proba(X_test)
+        self.finetuned_model_.to("cpu")
+        return pred_proba
 
 
 
@@ -294,8 +294,7 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
         categorical_features_indices,
         balance_probabilities,
         inference_precision,
-        memory_saving_mode,
-        device
+        memory_saving_mode
     ) -> TabPFNClassifier:
         '''
         Set the tabpfn classifier with the same specs used in finetuning,
@@ -314,5 +313,5 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
             categorical_features_indices=categorical_features_indices,
             inference_precision=inference_precision,
             memory_saving_mode=memory_saving_mode,
-            device=device
+            device=self.device
         )    
