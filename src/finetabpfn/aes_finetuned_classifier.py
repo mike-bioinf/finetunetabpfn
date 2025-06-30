@@ -7,6 +7,7 @@ from sklearn.utils.validation import check_is_fitted
 from tabpfn import TabPFNClassifier
 from finetabpfn.utils.training import resolve_device
 from finetabpfn import TabPFNClassifierParams
+from finetabpfn.utils.general import suppress_sklearn_and_tabpfn_warnings
 from finetabpfn.setup import build_instance_setup
 from finetabpfn.aes_finetuner_classifier import AesFineTunerTabPFNClassifier
 
@@ -125,7 +126,6 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
         self.log = log
 
     
-
     def fit(
         self,
         Xs: XType | list[XType],
@@ -181,7 +181,7 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
         return self
 
     
-    
+    @suppress_sklearn_and_tabpfn_warnings
     def predict(
         self, 
         X_test: XType,
@@ -235,6 +235,7 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
         return pred
 
 
+    @suppress_sklearn_and_tabpfn_warnings
     def predict_proba(
         self, 
         X_test: XType,

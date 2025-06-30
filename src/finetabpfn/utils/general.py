@@ -1,5 +1,7 @@
 import sys
 import logging
+import warnings
+from functools import wraps
 from typing import Any, Literal
 
 
@@ -34,6 +36,26 @@ def create_logger(stream=sys.stderr) -> logging.Logger:
     logger.addHandler(console_handler)
     logger.propagate = False
     return logger
+
+
+
+def suppress_sklearn_and_tabpfn_warnings(func):
+    '''
+    Decorator to filter sklearn future deprecation warnings,
+    and tabpfn loading and ignore limits warning.
+    '''
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", module="sklearn", category=FutureWarning)
+            warnings.filterwarnings("ignore", message=".*", module=".*tabpfn.*loading")
+            warnings.filterwarnings(
+                action="ignore", 
+                message=".*is greater than the maximum Number of features 500 supported by the model.*",
+                category=UserWarning
+            )
+            return func(*args, **kwargs)
+    return wrapper
 
 
 

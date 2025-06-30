@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import warnings
 import math
 import time
+import logging
 import torch
 import numpy as np
 import pandas as pd
 from dataclasses import asdict
 from typing import Literal, TYPE_CHECKING
-from functools import partial, wraps
+from functools import partial
 from copy import deepcopy
 from sklearn.utils import check_X_y
 from sklearn.model_selection import train_test_split
@@ -23,10 +23,11 @@ from finetabpfn.utils.training import resolve_device, _train_test_split
 from finetabpfn.utils.general import (
     enlist, 
     create_logger, 
-    get_metric_name
+    get_metric_name,
+    suppress_sklearn_and_tabpfn_warnings
 )
 
-from finetabpfn.utils.validation import iter_validate
+from finetabpfn.utils.validation import get_validation_pred_probas, compute_validation_metric
 from finetabpfn.adaptive_early_stopping import AdaptiveEarlyStopping
 from finetabpfn.setup import FineTuneSetup, AESetup, TabPFNClassifierParams
 
@@ -155,27 +156,7 @@ class AesFineTunerTabPFNClassifier:
 
 
 
-    def _suppress_sklearn_and_tabpfn_warnings(func):
-        '''
-        Decorator to filter sklearn future deprecation warnings,
-        and tabpfn loading and ignore limits warning.
-        '''
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", module="sklearn")
-                warnings.filterwarnings("ignore", message=".*", module=".*tabpfn.*loading")
-                warnings.filterwarnings(
-                    action="ignore", 
-                    message=".*is greater than the maximum Number of features 500 supported by the model.*",
-                    category=UserWarning
-                )
-                return func(*args, **kwargs)
-        return wrapper
-
-
-
-    @_suppress_sklearn_and_tabpfn_warnings
+    @suppress_sklearn_and_tabpfn_warnings
     def fit(self) -> float:
         '''
         Finetune the model. 
@@ -226,10 +207,7 @@ class AesFineTunerTabPFNClassifier:
 
         # meta_dataset_collator avoid the default torch collate_fn
         # that is unable to manage our "samples".
-        # With batch size of 1 this collate fn has no real effect.
-        # When the batch size is unlocked maybe one can implement
-        # a second collate function to retain the current situation 
-        # of single size batch with no padding.
+        # With batch size of 1 this collate fn has no effect.
         dl = DataLoader(
             dataset=datasets_collection, 
             batch_size=self.batch_size,
@@ -244,23 +222,26 @@ class AesFineTunerTabPFNClassifier:
         aes = AdaptiveEarlyStopping(**asdict(self.aes_setup))
         loss_fn = torch.nn.NLLLoss()
 
-        partial_iter_validate = partial(
-            iter_validate,
+        partial_get_validation_pred_probas = partial(
+            get_validation_pred_probas,
             clf=clf_validation,
             X_trains=X_trains,
             y_trains=y_trains,
-            X_vals=X_vals,
+            X_vals=X_vals
+        )
+
+        partial_compute_validation_metric = partial(
+            compute_validation_metric,
             y_vals=y_vals,
-            n_classes=datasets_n_classes,
-            print_first_preds=False
+            n_classes=datasets_n_classes
         )
 
         self.steps_monitor_val_metrics_ = None if self.fts.monitor_validation_metric is None else []
         self.best_model_ = deepcopy(clf.model_)
-        
-        self.init_val_metric_ = partial_iter_validate(
-            model=self.best_model_, 
-            validation_metric=self.fts.validation_metric
+  
+        self.init_val_metric_ = partial_compute_validation_metric(
+            pred_probas=partial_get_validation_pred_probas(model=self.best_model_),
+            metric=self.fts.validation_metric
         )
         
         self.best_val_metric_ = self.init_val_metric_
@@ -272,6 +253,14 @@ class AesFineTunerTabPFNClassifier:
         inner_step_train_losses = []
         total_inner_steps = 0
         start_time = time.time()
+
+        if self.logger:
+            self.logger.debug(
+                f"Finetuning with learning rate of {self.learning_rate}," +
+                f" batch size of {self.batch_size}," +
+                f" and number of accumulation steps of {self.n_accumulation_steps}"+
+                "\n" 
+            )
 
         # finetune loop
         while not self._signal_stop_finetune(aes, self.n_steps_finetune_, start_time):
@@ -309,13 +298,25 @@ class AesFineTunerTabPFNClassifier:
                     optim_impl.zero_grad()
 
                     # deepcopy for safety as "suggested" by the finetune example by priorlabs
-                    val_metric = partial_iter_validate(
-                        model=deepcopy(clf.model_),
-                        validation_metric=self.fts.validation_metric
+                    val_pred_probas = partial_get_validation_pred_probas(
+                        model=deepcopy(clf.model_)
                     )
-
+                    
+                    val_metric = partial_compute_validation_metric(
+                        pred_probas=val_pred_probas, 
+                        metric=self.fts.validation_metric
+                    )
+                    
                     self.steps_val_metrics_.append(val_metric)
                     
+                    if self.fts.monitor_validation_metric is not None:
+                        self.steps_monitor_val_metrics_.append(
+                            partial_compute_validation_metric(
+                                pred_probas=val_pred_probas,
+                                metric=self.fts.monitor_validation_metric
+                            )
+                        )
+
                     if val_metric < self.best_val_metric_:
                         self.best_val_metric_ = val_metric
                         self.best_model_ = deepcopy(clf.model_)
@@ -324,17 +325,8 @@ class AesFineTunerTabPFNClassifier:
                         aes.update_patience()
                     
                     self.steps_remaining_patience_.append(
-                        (aes.get_remaining_patience(self.n_steps_finetune_))
+                        aes.get_remaining_patience(self.n_steps_finetune_)
                     )
-                    
-                    # deepcopy for safety as "suggested" by the finetune example by priorlabs
-                    if self.fts.monitor_validation_metric is not None:
-                        self.steps_monitor_val_metrics_.append(
-                            partial_iter_validate(
-                                model=deepcopy(clf.model_),
-                                validation_metric=self.fts.monitor_validation_metric
-                            )
-                        )
                     
                     if self.logger:
                         self._log_finetune_step(
@@ -406,7 +398,7 @@ class AesFineTunerTabPFNClassifier:
 
         base_log = (
             f"Step {self.n_steps_finetune_}/{self.fts.max_steps} | "
-            f"Train Loss: {round(self.steps_train_losses_[-1], 5)} | "
+            #f"Train Loss: {round(self.steps_train_losses_[-1], 5)} | "
             f"Initial {name_val_metric}: {abs(round(self.init_val_metric_, 5))} | "
             f"Step {name_val_metric}: {abs(round(self.steps_val_metrics_[-1], 5))} | "
             f"Best {name_val_metric}: {abs(round(self.best_val_metric_, 5))}"
