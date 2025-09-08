@@ -15,12 +15,11 @@ def plot_finetune_metrics_from_dict_stats(stats_dict: dict) -> Axes:
     No choice on this aspect can be done.
     The function does not check the validity of the input dict.
     '''
-    plot_monitor_val_metric = False if stats_dict["name_monitor_val_metric"] is None else True
     return plot_finetune_metrics(
         df_finetune=stats_dict["df_finetune"],
         train_loss=True,
         val_metric=True,
-        monitor_val_metric=plot_monitor_val_metric,
+        monitor_val_metric=False if stats_dict["name_monitor_val_metric"] is None else True,
         name_val_metric=stats_dict["name_val_metric"],
         name_monitor_val_metric=stats_dict["name_monitor_val_metric"],
         best_step=stats_dict["best_step"]
@@ -66,7 +65,7 @@ def plot_finetune_metrics(
     if not train_loss and not val_metric and not monitor_val_metric:
         raise ValueError((
             "At least one finetune metric between"
-            "train_loss, val_metric and monitor_val_metric must be set to True."
+            " train_loss, val_metric and monitor_val_metric must be set to True."
         ))
     
     df_copy = deepcopy(df_finetune)

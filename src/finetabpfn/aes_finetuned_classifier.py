@@ -10,6 +10,7 @@ from finetabpfn import TabPFNClassifierParams
 from finetabpfn.utils.general import suppress_sklearn_and_tabpfn_warnings
 from finetabpfn.setup import build_instance_setup
 from finetabpfn.aes_finetuner_classifier import AesFineTunerTabPFNClassifier
+from finetabpfn.utils.model import save_model
 
 if TYPE_CHECKING:
     import numpy as np
@@ -21,10 +22,11 @@ if TYPE_CHECKING:
 
 
 
+
 class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
     '''
     Finetune TabPFN classifiers models with a simple adaptive early stopping strategy,
-    and then use it to predict on other/new data.
+    and then use them to predict on other/new data.
     
     Note: we do not respect the usual signature of sklearn predict methods.
     This is because tabpfn models are in-context learners and so one must
@@ -35,30 +37,25 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
     Parameters
     ----------------------
 
-    model_path : str | Path | Literal[auto], optional
-        Filepath of the TabPFN model to finetune.
-        - If "auto", the model will be downloaded upon first use
-        into your system cache directory.
-        - If a path or a string representing a path, the model will be loaded 
-        from the specified location if available, otherwise it will be downloaded 
-        to this location.
-
+    model_path (str | Path | Literal['default', 'old_default'], optional):
+    Filepath of the tabpfn model to finetune.
+    - If "default" or 'old_default' the model will be downloaded upon first use in your system cache directory.
+    "default" points to the new current default that is a model post-trained on real data.
+    "old_default" points to the old default trained on synthetic data only. 
+    - If a path or a string of a path, the model will be loaded from the user-specified 
+    location if available, otherwise it will be downloaded to this location.
+         
     learning_rate : float, optional
         Learning rate to use.
 
     batch_size : int, optional
         Batch size to use (currently enforced to 1 by TabPFN).
 
-    n_accumulation_steps : int, optional
-        Number of inner steps for gradient accumulation.
-        If `accumulate_grads_over_datasets` is False, this refers to the absolute 
-        number of batches for accumulation.
-        If `accumulate_grads_over_datasets` is True, this refers to the number of 
-        rounds over the full metabatches.
-        Note that a single batch may still have a size greater than 1 in either case.
-
-    accumulate_grads_over_datasets : bool, optional
-        Whether to accumulate gradients over the entire metabatch.
+     n_accumulation_steps : int, optional:
+        Number of training steps in which the gradients are accumulated.
+        Keep in mind that at each step we train on batch obtained from 
+        one or multiple datasets, depending on the number of training datasets
+        and the batch_size parameter. 
 
     tabpfn_classifier_params : Literal["default"] | dict | TabPFNClassifierParams, optional
         Parameters for the TabPFN classifier instance used in finetuning.
@@ -75,7 +72,7 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
     seed : int, optional
         Seed for reproducibility.
     
-    device: str | device | Literal['auto'], optional
+    device : str | device | Literal['auto'], optional
         The device to use for finetuning. 
         If "auto", the device is "cuda" if available, otherwise "cpu".
 
@@ -99,11 +96,10 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
     '''
     def __init__(
         self,
-        model_path: str | Path | Literal['auto'] = "auto",
+        model_path: str | Path | Literal['default', 'old_default'] = "default",
         learning_rate: float = 1e-5,
         batch_size: int = 1,
         n_accumulation_steps: int = 1,
-        accumulate_grads_over_datasets: bool = True,
         tabpfn_classifier_params: Literal["default"] | dict | TabPFNClassifierParams = "default", 
         finetune_setup: Literal["default"] | dict | FineTuneSetup = "default",
         aes_setup: Literal["default"] | dict | AESetup = "default",
@@ -116,13 +112,12 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
         self.learning_rate = learning_rate
         self.batch_size = batch_size
         self.n_accumulation_steps = n_accumulation_steps
-        self.accumulate_grads_over_datasets = accumulate_grads_over_datasets
         self.tabpfn_classifier_params = tabpfn_classifier_params
         self.finetune_setup = finetune_setup
         self.aes_setup = aes_setup
         self.optimizer = optimizer
         self.seed = seed
-        self.device = device
+        self.device = resolve_device(device)
         self.log = log
 
     
@@ -138,10 +133,10 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
         Parameters
         -------------
         Xs: XType | list[XType] 
-            Datasets on which the model is finetuned.
+            Dataset(s) on which the model is finetuned.
         
         ys: YType | list[YType] 
-            Labels of the datasets on which the model is finetuned.
+            Labels of the dataset(s) on which the model is finetuned.
         
         use_for_validation: None | bool | list[bool], optional
             Indicates which datasets are used in validation.
@@ -152,7 +147,7 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
 
         Returns
         -------------
-        AesFineTunedTabPFNClassifier:
+        AesFineTunedTabPFNClassifier: 
             The instance.
         '''
         finetuner = AesFineTunerTabPFNClassifier(
@@ -163,7 +158,6 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
             learning_rate=self.learning_rate,
             batch_size=self.batch_size,
             n_accumulation_steps=self.n_accumulation_steps,
-            accumulate_grads_over_datasets=self.accumulate_grads_over_datasets,
             tabpfn_classifier_params=self.tabpfn_classifier_params,
             finetune_setup=self.finetune_setup,
             aes_setup=self.aes_setup,
@@ -185,6 +179,7 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
     def predict(
         self, 
         X_test: XType,
+        *,
         X_contest: XType, 
         y_contest: YType, 
         categorical_features_indices: Sequence[int] | None = None,
@@ -217,7 +212,7 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
         np.ndarray
             The predicted class labels.
         '''
-        check_is_fitted(self, attributes="finetuned_model_")
+        check_is_fitted(self, "finetuned_model_")
         
         clf = self._set_tabpfn_for_testing(
             categorical_features_indices,
@@ -227,18 +222,19 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
         )
 
         clf.fit(X_contest, y_contest)
-        self.finetuned_model_.to(resolve_device(self.device))
+        self.finetuned_model_.to(self.device)
         clf.model_ = self.finetuned_model_
         clf.executor_.model = self.finetuned_model_
-        pred = clf.predict(X_test)
+        preds = clf.predict(X_test)
         self.finetuned_model_.to("cpu")
-        return pred
+        return preds
 
 
     @suppress_sklearn_and_tabpfn_warnings
     def predict_proba(
         self, 
         X_test: XType,
+        *,
         X_contest: XType, 
         y_contest: YType, 
         categorical_features_indices: Sequence[int] | None = None,
@@ -271,7 +267,7 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
         np.ndarray
             The predicted class probabilities.
         '''
-        check_is_fitted(self, attributes="finetuned_model_")
+        check_is_fitted(self, "finetuned_model_")
 
         clf = self._set_tabpfn_for_testing(
             categorical_features_indices,
@@ -281,13 +277,12 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
         )
 
         clf.fit(X_contest, y_contest)
-        self.finetuned_model_.to(resolve_device(self.device))
+        self.finetuned_model_.to(self.device)
         clf.model_ = self.finetuned_model_
         clf.executor_.model = self.finetuned_model_
         pred_proba = clf.predict_proba(X_test)
         self.finetuned_model_.to("cpu")
         return pred_proba
-
 
 
     def _set_tabpfn_for_testing(
@@ -305,7 +300,7 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
             build_instance_setup(TabPFNClassifierParams, self.tabpfn_classifier_params)
         )
         
-        # overwriting the params shared between fit and predict
+        # overwriting the params that can be freely tuned 
         clf_params["balance_probabilities"] = balance_probabilities
 
         return TabPFNClassifier(
@@ -315,4 +310,15 @@ class AesFineTunedTabPFNClassifier(ClassifierMixin, BaseEstimator):
             inference_precision=inference_precision,
             memory_saving_mode=memory_saving_mode,
             device=self.device
-        )    
+        )
+    
+
+    def save_finetuned_model(self, file: str | Path) -> None:
+        '''
+        Save the finetuned model in a TabPFN checkpoint.
+        
+        Parameters:
+            file (str | Path): Filepath of the checkpoint file.
+        '''
+        check_is_fitted(self, "finetuned_model_")
+        save_model(self.finetuned_model_, file, self.checkpoint_config_)

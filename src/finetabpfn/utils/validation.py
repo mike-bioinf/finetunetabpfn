@@ -7,7 +7,7 @@ if TYPE_CHECKING:
     import numpy as np
     from tabpfn.constants import XType, YType
     from tabpfn import TabPFNClassifier
-    from tabpfn.model.transformer import PerFeatureTransformer
+    from tabpfn.architectures.base import PerFeatureTransformer
     
 
 
@@ -47,10 +47,10 @@ def compute_validation_metric(
     metric: Literal["log_loss", "roc_auc"]
 ) -> float:
     '''
-    Computes the mean validation value using the metric defined in input
-    from the pre-compute predicted probabilities. 
-    Needs the truth labels and the number of classes of each dataset.
-    Returns the mean validation value.
+    Computes and returns the mean validation metric from the predicted probabilities, 
+    the truth labels and the number of classes of each dataset.
+    These three components are taken in order from the respective lists.
+    The roc auc score is returned negative (-1*auc).
     '''
     # remove Nones from y_vals and n_classes
     y_vals = [y_val for y_val in y_vals if y_val is not None]
@@ -61,7 +61,6 @@ def compute_validation_metric(
     for pred_proba, y_val, nc in zip(pred_probas, y_vals, n_classes):
         if metric == "log_loss":
             val_metric_value += log_loss(y_val, pred_proba)
-
         elif metric == "roc_auc":
             pred_proba = pred_proba[:, 1] if nc == 2 else pred_proba
             val_metric_value += -1 * roc_auc_score(
@@ -70,8 +69,7 @@ def compute_validation_metric(
                 average="macro",
                 multi_class="raise" if nc == 2 else "ovr"
             )
-
         else:
-            raise ValueError("Used a non supported validation metric.")
+            raise ValueError("Unsupported validation metric.")
 
     return val_metric_value/len(pred_probas)

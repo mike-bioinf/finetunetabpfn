@@ -21,7 +21,7 @@ class FineTuneSetup:
     
     train_contest_percentage (float):
         Float indicating the percentage of train data to use as context.
-        The remaining is used as test. Must be a number in (0, 1).
+        The remaining is used as "test". Must be a number in (0, 1).
     
     max_steps (int): 
         Maximum number of finetune steps.
@@ -42,7 +42,7 @@ class FineTuneSetup:
     train_percentage: float = 0.67
     train_contest_percentage: float = 0.75
     max_steps: int = 100
-    time_limit: int = 10000
+    time_limit: int = 10800 # 3 hours
     validation_metric: Literal["roc_auc", "log_loss"] = "log_loss"
     monitor_validation_metric: Literal["log_loss", "roc_auc"] | None = "roc_auc"
 
@@ -100,12 +100,13 @@ class AESetup:
 @dataclass
 class TabPFNClassifierParams:
     '''Dataclass for the TabPFNClassifier parameters'''
-    n_estimators: int = 4
+    n_estimators: int = 8
     softmax_temperature: float = 0.9
     balance_probabilities: bool = False
     average_before_softmax: bool = False
     ignore_pretraining_limits: bool = False
     inference_config: dict | ModelInterfaceConfig | None = None
+    n_jobs: int = -1
     random_state: int | RandomState | Generator | None = 0
 
     @classmethod
@@ -133,7 +134,7 @@ def build_instance_setup(
         The setup class.
     '''
     if input is None and not allow_none:
-        raise ValueError("input can be None in setup instance building process.")
+        raise ValueError("Input cannot be None in the setup instance building process.")
     elif input is None and allow_none:
         return None
     elif input == "default":
